@@ -1,0 +1,106 @@
+let
+    // Load main translation table
+    Source = Excel.CurrentWorkbook(){[Name="TranslationTable"]}[Content],
+    #"Changed Type" = Table.TransformColumnTypes(Source,
+        {
+            {"TextToTranslate", type text},
+            {"FromLangName", type text},
+            {"ToLangName", type text}
+        }
+    ),
+
+    // Load ISO language table
+    LangTable = Excel.CurrentWorkbook(){[Name="ISO_Languages"]}[Content],
+    #"Lang Changed Type" = Table.TransformColumnTypes(LangTable,
+        {
+            {"ISO Language Names", type text},
+            {"code", type text}
+        }
+    ),
+
+    // Merge: FromLangName → ISO code
+    MergeFrom = Table.NestedJoin(
+        #"Changed Type",
+        {"FromLangName"},
+        #"Lang Changed Type",
+        {"ISO Language Names"},
+        "FromLangLookup",
+        JoinKind.LeftOuter
+    ),
+    #"Expanded FromLang" = Table.ExpandTableColumn(
+        MergeFrom, 
+        "FromLangLookup", 
+        {"code"}, 
+        {"FromCode"}
+    ),
+
+    // Merge: ToLangName → ISO code
+    MergeTo = Table.NestedJoin(
+        #"Expanded FromLang",
+        {"ToLangName"},
+        #"Lang Changed Type",
+        {"ISO Language Names"},
+        "ToLangLookup",
+        JoinKind.LeftOuter
+    ),
+    #"Expanded ToLang" = Table.ExpandTableColumn(
+        MergeTo, 
+        "ToLangLookup", 
+        {"code"}, 
+        {"ToCode"}
+    ),
+
+    // Handle auto-detect
+    #"Filled FromCode" = Table.TransformColumns(
+        #"Expanded ToLang",
+        {
+            {"FromCode", each if _ = null or _ = "" then "auto" else _, type text}
+        }
+    ),
+
+    // Flexible translation function (Google API)
+    TranslateFlexible = (inputText as text, sourceLang as text, targetLang as text) as record =>
+        let
+            request = Web.Contents(
+                "https://translate.googleapis.com/translate_a/single",
+                [
+                    Query = [
+                        client = "gtx",
+                        sl = sourceLang,
+                        tl = targetLang,
+                        dt = "t",
+                        q = inputText
+                    ],
+                    Headers = [#"User-Agent"="Mozilla/5.0"]
+                ]
+            ),
+
+            json = try Json.Document(request) otherwise null,
+
+            translated = try json{0}{0}{0} otherwise "",
+            detectedLang = try json{2}{0} otherwise null
+        in
+            [Translated = translated, Detected = detectedLang],
+
+    // Add Translated + Detected Language columns
+    AddResults = Table.AddColumn(
+        #"Filled FromCode",
+        "TranslationResult",
+        each TranslateFlexible([TextToTranslate], [FromCode], [ToCode])
+    ),
+
+    // Expand record into two columns
+    ExpandResults = Table.ExpandRecordColumn(
+        AddResults,
+        "TranslationResult",
+        {"Translated", "Detected"},
+        {"TranslatedText", "DetectedLanguage"}
+    ),
+
+    // Remove FromCode/ToCode before load (as you requested)
+    FinalOutput = Table.RemoveColumns(
+        ExpandResults,
+        {"FromCode", "ToCode"}
+    )
+in
+    FinalOutput
