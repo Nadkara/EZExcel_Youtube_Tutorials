@@ -1,5 +1,5 @@
 let
-    // Load main translation table
+    // Load main translation table (change name if needed)
     Source = Excel.CurrentWorkbook(){[Name="TranslationTable"]}[Content],
     #"Changed Type" = Table.TransformColumnTypes(Source,
         {
@@ -50,7 +50,7 @@ let
         {"ToCode"}
     ),
 
-    // Handle auto-detect
+    // Handle auto-detect if FromLangName is blank
     #"Filled FromCode" = Table.TransformColumns(
         #"Expanded ToLang",
         {
@@ -58,8 +58,8 @@ let
         }
     ),
 
-    // Flexible translation function (Google API)
-    TranslateFlexible = (inputText as text, sourceLang as text, targetLang as text) as record =>
+    // Flexible translation function (returns text)
+    TranslateFlexible = (inputText as text, sourceLang as text, targetLang as text) as text =>
         let
             request = Web.Contents(
                 "https://translate.googleapis.com/translate_a/single",
@@ -74,33 +74,20 @@ let
                     Headers = [#"User-Agent"="Mozilla/5.0"]
                 ]
             ),
-
             json = try Json.Document(request) otherwise null,
-
-            translated = try json{0}{0}{0} otherwise "",
-            detectedLang = try json{2}{0} otherwise null
+            translated = try json{0}{0}{0} otherwise ""
         in
-            [Translated = translated, Detected = detectedLang],
+            translated,
 
-    // Add Translated + Detected Language columns
-    AddResults = Table.AddColumn(
+    // Add TranslatedText column
+    #"Added Translated Column" = Table.AddColumn(
         #"Filled FromCode",
-        "TranslationResult",
-        each TranslateFlexible([TextToTranslate], [FromCode], [ToCode])
+        "TranslatedText",
+        each TranslateFlexible([TextToTranslate], [FromCode], [ToCode]),
+        type text
     ),
 
-    // Expand record into two columns
-    ExpandResults = Table.ExpandRecordColumn(
-        AddResults,
-        "TranslationResult",
-        {"Translated", "Detected"},
-        {"TranslatedText", "DetectedLanguage"}
-    ),
-
-    // Remove FromCode/ToCode before load (as you requested)
-    FinalOutput = Table.RemoveColumns(
-        ExpandResults,
-        {"FromCode", "ToCode"}
-    )
+    // Remove helper code columns before load
+    FinalOutput = Table.RemoveColumns(#"Added Translated Column", {"FromCode", "ToCode"})
 in
     FinalOutput
